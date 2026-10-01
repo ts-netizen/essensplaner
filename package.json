@@ -1,0 +1,16 @@
+{
+  "name": "essensplaner-root",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces",
+    "build": "npm run build --workspace=@essensplaner/shared && npm run build --workspace=@essensplaner/server && npm run build --workspace=web",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run build --workspace=@essensplaner/shared && npm run typecheck --workspaces",
+    "test": "npm run test --workspaces --if-present"
+  }
+}

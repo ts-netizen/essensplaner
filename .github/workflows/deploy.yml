@@ -1,0 +1,104 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # ==========================================
+  # Stage 1: Quality Check
+  # ==========================================
+  quality-check:
+    name: Quality Check (Typecheck, Lint & Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Monorepo Typecheck
+        run: npm run typecheck
+
+      - name: Run Linting
+        run: npm run lint
+
+      - name: Run Unit & Integration Tests (Shared & Server)
+        run: npm test
+
+  # ==========================================
+  # Stage 2: Build & Deploy to Google Cloud Run
+  # ==========================================
+  build-and-deploy:
+    name: Build Docker & Deploy to Cloud Run
+    needs: quality-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      REGION: europe-west3
+      SERVICE_NAME: essensplaner
+      GAR_REPOSITORY: essensplaner
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and Push Docker Image
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          IMAGE_ROOT="${{ env.REGION }}-docker.pkg.dev/${PROJECT_ID}/${{ env.GAR_REPOSITORY }}/${{ env.SERVICE_NAME }}"
+          IMAGE_SHA="${IMAGE_ROOT}:${{ github.sha }}"
+          IMAGE_LATEST="${IMAGE_ROOT}:latest"
+
+          echo "Building Docker image: ${IMAGE_SHA}"
+          docker build -t "${IMAGE_SHA}" -t "${IMAGE_LATEST}" .
+
+          echo "Pushing Docker images to Artifact Registry..."
+          docker push "${IMAGE_SHA}"
+          docker push "${IMAGE_LATEST}"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          flags: '--port=8080 --allow-unauthenticated'
+
+      - name: Deployment Summary
+        run: |
+          echo "=============================================="
+          echo "Deployment completed successfully!"
+          echo "Service: ${{ env.SERVICE_NAME }}"
+          echo "Region:  ${{ env.REGION }}"
+          echo "URL:     ${{ steps.deploy.outputs.url }}"
+          echo "=============================================="
